@@ -1,0 +1,62 @@
+name: Release do plugin
+
+# O zip do plugin passou a ser montado aqui depois que um pacote gerado no
+# Windows saiu com barra invertida nos caminhos internos: o WordPress extraía
+# tudo achatado e recusava a ativação com "O arquivo do plugin não existe".
+# O `zip` do Linux sempre grava "/", que é o que o padrão exige.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confere a versão do cabeçalho do plugin
+        run: |
+          set -euo pipefail
+          header_version=$(grep -oP '(?<=^ \* Version: ).*' rekapp-for-woocommerce.php | tr -d '[:space:]')
+          echo "Versão no cabeçalho: $header_version"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            if [ "$header_version" != "$tag_version" ]; then
+              echo "Tag ($tag_version) e cabeçalho ($header_version) divergem." >&2
+              exit 1
+            fi
+          fi
+
+      - name: Lint de sintaxe PHP
+        run: |
+          set -euo pipefail
+          find . -name "*.php" -not -path "./.git/*" -print0 \
+            | xargs -0 -n1 php -l
+
+      - name: Monta o pacote
+        run: |
+          set -euo pipefail
+          mkdir -p build/rekapp-for-woocommerce
+          cp rekapp-for-woocommerce.php uninstall.php README.md build/rekapp-for-woocommerce/
+          cp -r includes assets build/rekapp-for-woocommerce/
+          cd build
+          zip -r ../rekapp-for-woocommerce.zip rekapp-for-woocommerce
+          cd ..
+          # Um zip com "\" no nome das entradas instala em lugar nenhum.
+          if unzip -l rekapp-for-woocommerce.zip | grep -q '\\'; then
+            echo "Zip com barra invertida nos caminhos." >&2
+            exit 1
+          fi
+          unzip -l rekapp-for-woocommerce.zip
+
+      - name: Publica no release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" rekapp-for-woocommerce.zip --clobber
